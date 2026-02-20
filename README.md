@@ -139,7 +139,7 @@ python select.py "surt_host_name, url_host_name_reversed, url_host_tld, url_host
 ### Crawl
 
 ```
-"fetch_200, fetch_200_lote, fetch_200_lote_pct, fetch_gone, fetch_notModified"
+python ./select.py "fetch_200, fetch_200_lote, fetch_200_lote_pct, fetch_gone, fetch_notModified"
 
 ┌───────────┬────────────────┬────────────────────┬────────────┬───────────────────┐
 │ fetch_200 │ fetch_200_lote │ fetch_200_lote_pct │ fetch_gone │ fetch_notModified │
@@ -150,7 +150,7 @@ python select.py "surt_host_name, url_host_name_reversed, url_host_tld, url_host
 ```
 
 ```
-"fetch_3xx, fetch_4xx, fetch_5xx"
+python ./select.py "fetch_3xx, fetch_4xx, fetch_5xx"
 
 ┌───────────┬───────────┬───────────┐
 │ fetch_3xx │ fetch_4xx │ fetch_5xx │
@@ -165,7 +165,7 @@ NOTE: that's an alarming 4xx result -- 404 and 410 are gone, these 4xxs might be
 ### Robots
 
 ```
-"robots_200, robots_gone, robots_notModified"
+python ./select.py "robots_200, robots_gone, robots_notModified"
 
 ┌────────────┬─────────────┬────────────────────┐
 │ robots_200 │ robots_gone │ robots_notModified │
@@ -176,7 +176,7 @@ NOTE: that's an alarming 4xx result -- 404 and 410 are gone, these 4xxs might be
 ```
 
 ```
-"robots_3xx, robots_4xx, robots_5xx"
+python ./select.py "robots_3xx, robots_4xx, robots_5xx"
 
 ┌────────────┬────────────┬────────────┐
 │ robots_3xx │ robots_4xx │ robots_5xx │
@@ -189,7 +189,7 @@ NOTE: that's an alarming 4xx result -- 404 and 410 are gone, these 4xxs might be
 ### Ranks
 
 ```
-"hcrank100s, hcrank100p, prank100s, prank100p"
+python ./select.py "hcrank100s, hcrank100p, prank100s, prank100p"
 
 ┌────────────┬────────────┬───────────┬───────────┐
 │ hcrank100s │ hcrank100p │ prank100s │ prank100p │
@@ -202,7 +202,7 @@ NOTE: that's an alarming 4xx result -- 404 and 410 are gone, these 4xxs might be
 BUG: yeah these shouldn't be nulls. SPOILER: it's a www/not-www issue on my side.
 
 ```
-"hcrank_raw, hcrank_pos, prank_raw, prank_pos"
+python ./select.py "hcrank_raw, hcrank_pos, prank_raw, prank_pos"
 
 ┌────────────┬────────────┬───────────┬───────────┐
 │ hcrank_raw │ hcrank_pos │ prank_raw │ prank_pos │
@@ -219,7 +219,7 @@ BUG: ditto
 This needs a different WHERE clause:
 
 ```
-"url_host_name_reversed, is_us_federal, hcrank100s, hcrank100p, prank100s, prank100p" "url_host_registered_domain = 'congress.gov'"
+python ./select.py "url_host_name_reversed, is_us_federal, hcrank100s, hcrank100p, prank100s, prank100p" "url_host_registered_domain = 'congress.gov'"
 SELECT url_host_name_reversed, is_us_federal, hcrank100s, hcrank100p, prank100s, prank100p FROM eot2020_host WHERE url_host_registered_domain = 'congress.gov'
 ┌────────────────────────────┬───────────────┬────────────┬────────────┬───────────┬───────────┐
 │   url_host_name_reversed   │ is_us_federal │ hcrank100s │ hcrank100p │ prank100s │ prank100p │
@@ -244,7 +244,7 @@ BUG: well there's the ranking bug cause, it's www vs. non-www.
 ### What are the highest ranked federal .gov hosts that we have nothing for?
 
 ```
-$ python ./select.py "url_host_name_reversed, hcrank100s" "url_host_tld = 'gov' AND is_us_federal AND fetch_200 = 0 ORDER BY hcrank100s DESC LIMIT 10"
+python ./select.py "url_host_name_reversed, hcrank100s" "url_host_tld = 'gov' AND is_us_federal AND fetch_200 = 0 ORDER BY hcrank100s DESC LIMIT 10"
 SELECT url_host_name_reversed, hcrank100s FROM eot2020_host WHERE url_host_tld = 'gov' AND is_us_federal AND fetch_200 = 0 ORDER BY hcrank100s DESC LIMIT 10
 ┌────────────────────────┬────────────┐
 │ url_host_name_reversed │ hcrank100s │
