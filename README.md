@@ -26,6 +26,7 @@ duckdb -c "DESCRIBE FROM 'https://data.commoncrawl.org/projects/eot2020-host-tes
 ```
 
 <details><summary>click to see output</summary>
+
 ```
 ┌────────────────────────────┬─────────────┬─────────┬─────────┬─────────┬─────────┐
 │        column_name         │ column_type │  null   │   key   │ default │  extra  │
