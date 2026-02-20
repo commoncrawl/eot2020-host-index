@@ -99,7 +99,7 @@ different algorithms (harmonic centrality and pagerank) and
 (currently) 2 different ways of normalizing these ranks to the range
 0-100. (Eventually we'll choose one of the two.)
 
-- hcrank\_raw, prank\_raw, hcrank\_pos, prank\_pos are unnormalized, so you should probably ignore them
+- hcrank_raw, prank_raw, hcrank_pos, prank_pos are unnormalized, so you should probably ignore them
 - hcrank100s and hcrank100p are two different 0-100 normalizations of the harmonic centrality rank
 - ditto for prank100s and prank100p
 
