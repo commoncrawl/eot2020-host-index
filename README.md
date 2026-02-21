@@ -109,9 +109,10 @@ different algorithms (harmonic centrality and pagerank) and
 
 ## Examples
 
-Let's look at an entire row for congress.gov. We'll do it in python because the python library
-is more willing to interact directly with s3 than the duckdb cli client. The script is `select.py`
-and it takes 2 arguments, the SELECT and WHERE clauses. We'll use some shell variables to reduce typing.
+Let's look at an entire row for congress.gov. We'll do it in python
+using a helper script `select.py`. This script takes 2 arguments, the
+SELECT and WHERE clauses. We'll use some shell variables to reduce
+typing.
 
 Since the parquet file is only 80 megabytes, we'll download it
 
@@ -347,7 +348,8 @@ SELECT url, fetch_status FROM eot2020_url WHERE url_host_tld = 'gov' AND url_hos
 
 404s are fetch_gone, so the 400s and 503 are concerning.
 
-How about for robots?
+How about for robots? (Note the trick of `url_path = '/robots.txt'` ... in Common Crawl's normal url index
+there's `subset = 'robotstxt'`, but that hive partition does not exist in the EOT2020 url index.)
 
 ```
 python ./url-select.py "url, fetch_status" "url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' LIMIT 10"
@@ -423,7 +425,7 @@ python ./url-select.py "fetch_status, COUNT(*)" "url_host_tld = 'gov' AND url_ho
 SELECT fetch_status, COUNT(*) FROM eot2020_url WHERE url_host_tld = 'gov' AND url_host_name = 'www.congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' GROUP BY fetch_status
 ┌──────────────┬──────────────┐
 │ fetch_status │ count_star() │
-│    int16     │    int64     │
+    int16     │    int64     │
 ├──────────────┼──────────────┤
 │          400 │          300 │
 └──────────────┴──────────────┘
@@ -432,7 +434,7 @@ SELECT fetch_status, COUNT(*) FROM eot2020_url WHERE url_host_tld = 'gov' AND ur
 ### What are some of the LOTE urls, for example on irs.gov?
 
 ```
- python ./url-select.py "url, content_languages" "url_host_registered_domain = 'irs.gov' AND content_languages NOT LIKE 'eng%' LIMIT 10"
+python ./url-select.py "url, content_languages" "url_host_registered_domain = 'irs.gov' AND content_languages NOT LIKE 'eng%' LIMIT 10"
 SELECT url, content_languages FROM eot2020_url WHERE url_host_registered_domain = 'irs.gov' AND content_languages NOT LIKE 'eng%' LIMIT 10
 ┌────────────────────────┬───────────────────┐
 │          url           │ content_languages │
@@ -452,4 +454,50 @@ SELECT url, content_languages FROM eot2020_url WHERE url_host_registered_domain 
 │ 10 rows                          2 columns │
 └────────────────────────────────────────────┘
 ```
-Boring.
+Boring. Let's look at non-'/es' paths:
+
+```
+python ./url-select.py "url, content_languages" "url_host_registered_domain = 'irs.gov' AND url_path <> '/es' AND content_languages NOT LIKE 'eng%' LIMIT 10"
+SELECT url, content_languages FROM eot2020_url WHERE url_host_registered_domain = 'irs.gov' AND url_path <> '/es' AND content_languages NOT LIKE 'eng%' LIMIT 10
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────┬───────────────────┐
+│                                                 url                                                 │ content_languages │
+│                                               varchar                                               │      varchar      │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┼───────────────────┤
+│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es/charities-and-nonprofits'                            │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es/coronavirus-tax-relief-and-economic-impact-payments' │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es/coronavirus-tax-relief-and-economic-impact-payments' │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es/coronavirus-tax-relief-and-economic-impact-payments' │ spa,eng,kor       │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┴───────────────────┤
+│ 10 rows                                                                                                       2 columns │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+Those are all mangled. Let's try excluding '/es%':
+
+```
+python ./url-select.py "url, content_languages" "url_host_registered_domain = 'irs.gov' AND url_path NOT LIKE '/es%' AND content_languages NOT LIKE 'eng%' LIMIT 10" 
+SELECT url, content_languages FROM eot2020_url WHERE url_host_registered_domain = 'irs.gov' AND url_path NOT LIKE '/es%' AND content_languages NOT LIKE 'eng%' LIMIT 10
+┌──────────────────────────────────────────────────────────────────────────────┬───────────────────┐
+│                                     url                                      │ content_languages │
+│                                   varchar                                    │      varchar      │
+├──────────────────────────────────────────────────────────────────────────────┼───────────────────┤
+│ https://www.irs.gov/help/information-about-federal-taxes-arabic              │ ara,eng,xho       │
+│ https://www.irs.gov/help/information-about-federal-taxes-arabic              │ ara,eng,xho       │
+│ https://www.irs.gov/help/information-about-federal-taxes-bengali             │ ben,eng,xho       │
+│ https://www.irs.gov/help/information-about-federal-taxes-bengali             │ ben,eng,xho       │
+│ https://www.irs.gov/help/information-about-federal-taxes-chinese-traditional │ zho,eng,ind       │
+│ https://www.irs.gov/help/information-about-federal-taxes-chinese-traditional │ zho,eng,ind       │
+│ https://www.irs.gov/help/information-about-federal-taxes-farsi               │ fas,eng,urd       │
+│ https://www.irs.gov/help/information-about-federal-taxes-farsi               │ fas,eng,urd       │
+│ https://www.irs.gov/help/information-about-federal-taxes-french              │ fra,eng,kor       │
+│ https://www.irs.gov/help/information-about-federal-taxes-french              │ fra,eng,kor       │
+├──────────────────────────────────────────────────────────────────────────────┴───────────────────┤
+│ 10 rows                                                                                2 columns │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+Jackpot!
