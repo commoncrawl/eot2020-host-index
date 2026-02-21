@@ -292,9 +292,10 @@ SELECT hcrank100s, url_host_name_reversed, fetch_200, fetch_200_lote_pct FROM eo
 
 ## Let's also look at the url index
 
-The url index schema is described elsewhere. We won't download the entire
-index like we did before -- the helper program `url-select.py` tells
-duckdb to directly access the parquet files from s3.
+[The url index schema is described elsewhere.](https://commoncrawl.org/columnar-index)
+We won't download the entire index like we did before -- the helper
+program `url-select.py` tells duckdb to directly access the parquet
+files from s3.
 
 ### What are those 4xxs for congress.gov?
 
@@ -425,7 +426,7 @@ python ./url-select.py "fetch_status, COUNT(*)" "url_host_tld = 'gov' AND url_ho
 SELECT fetch_status, COUNT(*) FROM eot2020_url WHERE url_host_tld = 'gov' AND url_host_name = 'www.congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' GROUP BY fetch_status
 ┌──────────────┬──────────────┐
 │ fetch_status │ count_star() │
-    int16     │    int64     │
+│    int16     │    int64     │
 ├──────────────┼──────────────┤
 │          400 │          300 │
 └──────────────┴──────────────┘
