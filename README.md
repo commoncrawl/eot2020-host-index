@@ -83,7 +83,7 @@ The schema has multiple parts:
 - `is_us_federal` is true for hosts that are actual US federal government websites
 
 > [!NOTE]
-> BUG: `is_us_federal` is too broad in the v2 testing database. It's probably correct for the .gov tld. This bug is resolved in V4.
+> BUG: `is_us_federal` is too broad in the v2 testing database. It's probably correct for the .gov tld. This bug partially still exists in V4 but is less severe.
 
 
 ### Crawl Summary
@@ -317,6 +317,37 @@ SELECT hcrank100s, url_host_name_reversed, fetch_200, fetch_200_lote_pct FROM eo
 │ 20 rows                                                     4 columns │
 └───────────────────────────────────────────────────────────────────────┘
 ```
+
+### What are the top host according to harmonic centrality?
+
+```bash
+python ./select.py "url_host_name, is_us_federal, fetch_200, hcrank_pos, hcrank_raw, hcrank100s" "is_us_federal is TRUE ORDER BY hcrank_pos ASC LIMIT 10"
+```
+
+```
+SELECT url_host_name, is_us_federal, fetch_200, hcrank_pos, hcrank_raw, hcrank100s FROM eot2020_host WHERE is_us_federal is TRUE ORDER BY hcrank_pos ASC LIMIT 10
+┌───────────────────────┬───────────────┬───────────┬────────────┬────────────┬────────────┐
+│     url_host_name     │ is_us_federal │ fetch_200 │ hcrank_pos │ hcrank_raw │ hcrank100s │
+│        varchar        │    boolean    │   int64   │   int64    │   double   │   int32    │
+├───────────────────────┼───────────────┼───────────┼────────────┼────────────┼────────────┤
+│ www.wordpress.com     │ true          │      2226 │         88 │ 23860242.0 │        100 │
+│ tumblr.com            │ true          │      2638 │        110 │ 23508414.0 │        100 │
+│ www.nasa.gov          │ true          │     26809 │        128 │ 23268830.0 │        100 │
+│ cdc.gov               │ true          │    777329 │        140 │ 23232876.0 │        100 │
+│ www.ncbi.nlm.nih.gov  │ true          │   3641163 │        178 │ 23025570.0 │        100 │
+│ www.loc.gov           │ true          │   1746500 │        275 │ 22444530.0 │        100 │
+│ www.whitehouse.gov    │ true          │     82638 │        318 │ 22309318.0 │        100 │
+│ www.privacyshield.gov │ true          │      2712 │        368 │ 22142958.0 │        100 │
+│ www.fda.gov           │ true          │     15471 │        383 │ 22108202.0 │        100 │
+│ ftc.gov               │ true          │    281639 │        526 │ 21787366.0 │        100 │
+├───────────────────────┴───────────────┴───────────┴────────────┴────────────┴────────────┤
+│ 10 rows                                                                        6 columns │
+└──────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+> [!WARNING]
+> The `is_us_federal` column contains some false-positives like `wordpress.com` or `tumblr.com`.
+
 
 ## Let's also look at the url index
 
