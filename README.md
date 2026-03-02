@@ -318,7 +318,7 @@ SELECT hcrank100s, url_host_name_reversed, fetch_200, fetch_200_lote_pct FROM eo
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
-### What are the US federal government websites according to harmonic centrality?
+### What are the top US federal government websites according to harmonic centrality?
 
 ```bash
 python ./select.py "url_host_name, is_us_federal, fetch_200, hcrank_pos, hcrank_raw, hcrank100s" "is_us_federal is TRUE ORDER BY hcrank_pos ASC LIMIT 10"
