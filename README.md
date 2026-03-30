@@ -22,7 +22,7 @@ pip install duckdb
 ## Schema
 
 ```bash
-duckdb -c "DESCRIBE FROM 'https://data.commoncrawl.org/projects/eot2020-host-testing/EOT-2020-with-ranks-v4.parquet'"
+duckdb -c "DESCRIBE FROM 'https://data.commoncrawl.org/projects/eot2020-host-testing/EOT-2020-with-ranks-v5.parquet'"
 ```
 
 <details><summary>click to see output</summary>
@@ -83,7 +83,7 @@ The schema has multiple parts:
 - `is_us_federal` is true for hosts that are actual US federal government websites
 
 > [!NOTE]
-> BUG: `is_us_federal` is too broad in the v2 testing database. It's probably correct for the .gov tld. This bug partially still exists in V4 but is less severe.
+> BUG: `is_us_federal` is too broad in the v2 testing database. This bug was resolved in V5.
 
 
 ### Crawl Summary
@@ -120,7 +120,7 @@ typing.
 Since the parquet file is only 80 megabytes, we'll download it
 
 ```bash
-wget https://data.commoncrawl.org/projects/eot2020-host-testing/EOT-2020-with-ranks-v4.parquet
+wget https://data.commoncrawl.org/projects/eot2020-host-testing/EOT-2020-with-ranks-v5.parquet
 ```
 
 And to save typing:
@@ -330,8 +330,6 @@ SELECT url_host_name, is_us_federal, fetch_200, hcrank_pos, hcrank_raw, hcrank10
 │     url_host_name     │ is_us_federal │ fetch_200 │ hcrank_pos │ hcrank_raw │ hcrank100s │
 │        varchar        │    boolean    │   int64   │   int64    │   double   │   int32    │
 ├───────────────────────┼───────────────┼───────────┼────────────┼────────────┼────────────┤
-│ www.wordpress.com     │ true          │      2226 │         88 │ 23860242.0 │        100 │
-│ tumblr.com            │ true          │      2638 │        110 │ 23508414.0 │        100 │
 │ www.nasa.gov          │ true          │     26809 │        128 │ 23268830.0 │        100 │
 │ cdc.gov               │ true          │    777329 │        140 │ 23232876.0 │        100 │
 │ www.ncbi.nlm.nih.gov  │ true          │   3641163 │        178 │ 23025570.0 │        100 │
@@ -340,13 +338,12 @@ SELECT url_host_name, is_us_federal, fetch_200, hcrank_pos, hcrank_raw, hcrank10
 │ www.privacyshield.gov │ true          │      2712 │        368 │ 22142958.0 │        100 │
 │ www.fda.gov           │ true          │     15471 │        383 │ 22108202.0 │        100 │
 │ ftc.gov               │ true          │    281639 │        526 │ 21787366.0 │        100 │
+│ justice.gov           │ true          │   2324332 │        550 │ 21741378.0 │        100 │
+│ www.nps.gov           │ true          │    318360 │        572 │ 21716190.0 │        100 │
 ├───────────────────────┴───────────────┴───────────┴────────────┴────────────┴────────────┤
 │ 10 rows                                                                        6 columns │
 └──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
-
-> [!WARNING]
-> The `is_us_federal` column contains some false-positives like `wordpress.com` or `tumblr.com`.
 
 
 ## Let's also look at the url index
