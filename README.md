@@ -1,13 +1,31 @@
-# eot2020-host-index
+# eot-host-index
 
 PRELIMINARY VERSION
 
-This readme describes an host index database that aggregates
+This readme describes a host index database that aggregates
 information about the contents in the End of Term Archive.
 
 https://eotarchive.org/
 
-It only has the year 2020 for now. The parquet file is stored on S3 but also accessible via HTTP.
+It currently covers two crawls, **EOT-2020** and **EOT-2024**. The data is
+stored as a hive-partitioned parquet dataset, partitioned by version (`v`) and
+crawl year (`eot`):
+
+```
+v=5/eot=2020/host-index.parquet
+v=5/eot=2024/host-index.parquet
+```
+
+Every row therefore carries an `eot` column (and a `v` column), so a single
+query can look at one crawl (`WHERE eot = 2024`) or compare both (`GROUP BY
+eot`).
+
+The dataset is available two ways:
+
+- over HTTP (default, no credentials):
+  `https://data.commoncrawl.org/projects/eot-host-index-testing/`
+- on S3 (needs AWS credentials):
+  `s3://commoncrawl-dev/eot-archive/eot-host-index-testing/`
 
 ## Install the duckdb cli
 
@@ -21,8 +39,18 @@ pip install duckdb
 
 ## Schema
 
+The helper scripts read the dataset directly from its source -- no download
+needed. To inspect the schema over HTTP:
+
 ```bash
-duckdb -c "DESCRIBE FROM 'https://data.commoncrawl.org/projects/eot2020-host-testing/EOT-2020-with-ranks-v4.parquet'"
+duckdb -c "DESCRIBE FROM read_parquet('https://data.commoncrawl.org/projects/eot-host-index-testing/v=5/eot=2024/host-index.parquet')"
+```
+
+To inspect both crawls at once (and see the `v`/`eot` partition columns), point
+duckdb at the hive layout on S3:
+
+```bash
+duckdb -c "DESCRIBE FROM read_parquet('s3://commoncrawl-dev/eot-archive/eot-host-index-testing/v=*/eot=*/host-index.parquet', hive_partitioning = true)"
 ```
 
 <details><summary>click to see output</summary>
@@ -59,7 +87,6 @@ duckdb -c "DESCRIBE FROM 'https://data.commoncrawl.org/projects/eot2020-host-tes
 │ robots_other               │ BIGINT      │ YES     │ NULL    │ NULL    │ NULL    │
 │ robots_redirPerm           │ BIGINT      │ YES     │ NULL    │ NULL    │ NULL    │
 │ robots_redirTemp           │ BIGINT      │ YES     │ NULL    │ NULL    │ NULL    │
-│ is_us_federal              │ BOOLEAN     │ YES     │ NULL    │ NULL    │ NULL    │
 │ hcrank_pos                 │ BIGINT      │ YES     │ NULL    │ NULL    │ NULL    │
 │ hcrank_raw                 │ DOUBLE      │ YES     │ NULL    │ NULL    │ NULL    │
 │ hcrank100s                 │ INTEGER     │ YES     │ NULL    │ NULL    │ NULL    │
@@ -68,13 +95,23 @@ duckdb -c "DESCRIBE FROM 'https://data.commoncrawl.org/projects/eot2020-host-tes
 │ prank_raw                  │ DOUBLE      │ YES     │ NULL    │ NULL    │ NULL    │
 │ prank100s                  │ INTEGER     │ YES     │ NULL    │ NULL    │ NULL    │
 │ prank100p                  │ INTEGER     │ YES     │ NULL    │ NULL    │ NULL    │
-├────────────────────────────┴─────────────┴─────────┴─────────┴─────────┴─────────┤
-│ 36 rows                                                                6 columns │
-└──────────────────────────────────────────────────────────────────────────────────┘
+│ is_us_federal              │ BOOLEAN     │ YES     │ NULL    │ NULL    │ NULL    │
+│ eot                        │ BIGINT      │ YES     │ NULL    │ NULL    │ NULL    │
+│ v                          │ BIGINT      │ YES     │ NULL    │ NULL    │ NULL    │
+└────────────────────────────┴─────────────┴─────────┴─────────┴─────────┴─────────┘
+  38 rows                                                                6 columns
 ```
 </details>
 
 The schema has multiple parts:
+
+### Partitioning
+
+- `eot` is the crawl year, `2020` or `2024`
+- `v` is the version of the host index (currently `5`)
+
+These are hive partition columns derived from the file path; filtering on `eot`
+lets duckdb skip the partitions you don't need.
 
 ### Hostnames
 
@@ -83,8 +120,8 @@ The schema has multiple parts:
 - `is_us_federal` is true for hosts that are actual US federal government websites
 
 > [!NOTE]
-> BUG: `is_us_federal` is too broad in the v2 testing database. It's probably correct for the .gov tld. This bug partially still exists in V4 but is less severe.
-
+> `is_us_federal` is probably correct for the .gov tld but is still a bit broad
+> for other tlds.
 
 ### Crawl Summary
 
@@ -92,15 +129,13 @@ The schema has multiple parts:
 - `robots_*` does the same for robots.txt.
 - `_lote` is "Languages Other Than English." `fetch_200_lote_pct` is the percentage of `fetch_200` that has a primary language other than English.
 
-> [!NOTE]
-> BUG: In the v2 testing database, all of the `fetch_` and `robots_` should be integers.
-
 ### Ranking information
 
 We use a web graph to compute search engine-style ranks. We have 2
 different algorithms (harmonic centrality and pagerank) and
 (currently) 2 different ways of normalizing these ranks to the range
-0-100. (Eventually we'll choose one of the two.)
+0-100. (Eventually we'll choose one of the two.) Ranks are computed
+per crawl, so a host's rank in 2020 and 2024 can differ.
 
 - `hcrank_raw`, `prank_raw`, `hcrank_pos`, `prank_pos` are unnormalized, so you should probably ignore them
 - `hcrank100s` and `hcrank100p` are two different 0-100 normalizations of the harmonic centrality rank
@@ -112,20 +147,34 @@ different algorithms (harmonic centrality and pagerank) and
 
 ## Examples
 
-Let's look at an entire row for **congress.gov**. We'll do it in Python
-using a helper script `select.py`. This script takes 2 arguments, the
-SELECT and WHERE clauses. We'll use some shell variables to reduce
-typing.
+We'll query the index in Python using a helper script `select.py`. This
+script takes 2 arguments, the SELECT and WHERE clauses, and exposes the dataset
+as the view `eot_host`. By default it reads from the public HTTP mirror; no
+download is required.
 
-Since the parquet file is only 80 megabytes, we'll download it
+To read from S3 instead (requires AWS credentials), set `EOT_SOURCE=s3`:
 
 ```bash
-wget https://data.commoncrawl.org/projects/eot2020-host-testing/EOT-2020-with-ranks-v4.parquet
+EOT_SOURCE=s3 python select.py "eot, COUNT(*) AS hosts, COUNT(*) FILTER (WHERE is_us_federal) AS federal_hosts" "url_host_tld = 'gov' GROUP BY eot ORDER BY eot"
 ```
 
-And to save typing:
+```
+┌───────┬────────┬───────────────┐
+│  eot  │ hosts  │ federal_hosts │
+│ int64 │ int64  │     int64     │
+├───────┼────────┼───────────────┤
+│  2020 │  52536 │         27889 │
+│  2024 │ 108162 │         37248 │
+└───────┴────────┴───────────────┘
+```
+
+Because the index spans two crawls, every query should either filter on a
+specific `eot` (e.g. `eot = 2020`) or `GROUP BY eot` (so the crawl year is part
+of the output). The walkthrough below looks at **congress.gov** in EOT-2020;
+we'll save some typing with a shell variable that pins the crawl:
+
 ```bash
-WHERE="surt_host_name = 'gov,congress'"
+WHERE="surt_host_name = 'gov,congress' AND eot = 2020"
 ```
 
 ### Names
@@ -217,10 +266,6 @@ python ./select.py "hcrank100s, hcrank100p, prank100s, prank100p" "$WHERE"
 └────────────┴────────────┴───────────┴───────────┘
 ```
 
-> [!WARNING]
-> In V2, these rank values were nulls due to a www/not-www issue that was fixed in V3.
-
-
 ```bash
 python ./select.py "hcrank_raw, hcrank_pos, prank_raw, prank_pos" "$WHERE"
 ```
@@ -234,17 +279,16 @@ python ./select.py "hcrank_raw, hcrank_pos, prank_raw, prank_pos" "$WHERE"
 └────────────┴────────────┴───────────────────────┴───────────┘
 ```
 
-
 ### Subdomains
 
-This needs a different WHERE clause:
+This needs a different WHERE clause (still pinned to one crawl):
 
 ```bash
-python ./select.py "url_host_name, url_host_name_reversed, is_us_federal, hcrank100s, hcrank100p, prank100s, prank100p" "url_host_registered_domain = 'congress.gov'"
+python ./select.py "url_host_name, url_host_name_reversed, is_us_federal, hcrank100s, hcrank100p, prank100s, prank100p" "url_host_registered_domain = 'congress.gov' AND eot = 2020"
 ```
 
 ```
-SELECT url_host_name, url_host_name_reversed, is_us_federal, hcrank100s, hcrank100p, prank100s, prank100p FROM eot2020_host WHERE url_host_registered_domain = 'congress.gov'
+SELECT url_host_name, url_host_name_reversed, is_us_federal, hcrank100s, hcrank100p, prank100s, prank100p FROM eot_host WHERE url_host_registered_domain = 'congress.gov' AND eot = 2020
 ┌────────────────────────────┬────────────────────────────┬───────────────┬────────────┬────────────┬───────────┬───────────┐
 │       url_host_name        │   url_host_name_reversed   │ is_us_federal │ hcrank100s │ hcrank100p │ prank100s │ prank100p │
 │          varchar           │          varchar           │    boolean    │   int32    │   int32    │   int32   │   int32   │
@@ -261,17 +305,16 @@ SELECT url_host_name, url_host_name_reversed, is_us_federal, hcrank100s, hcrank1
 └────────────────────────────┴────────────────────────────┴───────────────┴────────────┴────────────┴───────────┴───────────┘
 ```
 
-
 ## Let's ask some questions
 
 ### What are the highest ranked federal .gov hosts that we have nothing for?
 
 ```bash
-python ./select.py "url_host_name_reversed, hcrank100s" "url_host_tld = 'gov' AND is_us_federal AND fetch_200 = 0 ORDER BY hcrank100s DESC LIMIT 10"
+python ./select.py "url_host_name_reversed, hcrank100s" "url_host_tld = 'gov' AND is_us_federal AND fetch_200 = 0 AND eot = 2020 ORDER BY hcrank100s DESC LIMIT 10"
 ```
 
 ```
-SELECT url_host_name_reversed, hcrank100s FROM eot2020_host WHERE url_host_tld = 'gov' AND is_us_federal AND fetch_200 = 0 ORDER BY hcrank100s DESC LIMIT 10
+SELECT url_host_name_reversed, hcrank100s FROM eot_host WHERE url_host_tld = 'gov' AND is_us_federal AND fetch_200 = 0 AND eot = 2020 ORDER BY hcrank100s DESC LIMIT 10
 ┌────────────────────────┬────────────┐
 │ url_host_name_reversed │ hcrank100s │
 │        varchar         │   int32    │
@@ -284,54 +327,52 @@ Well that was boring.
 ### What hosts have a large fraction of LOTE (languages other than english) pages?
 
 ```bash
-python ./select.py "hcrank100s, url_host_name_reversed, fetch_200, fetch_200_lote_pct" "fetch_200_lote_pct > 10 AND url_host_tld = 'gov' AND is_us_federal ORDER BY hcrank100s DESC LIMIT 20"
+python ./select.py "hcrank100s, url_host_name_reversed, fetch_200, fetch_200_lote_pct" "fetch_200_lote_pct > 10 AND url_host_tld = 'gov' AND is_us_federal AND eot = 2020 ORDER BY hcrank100s DESC LIMIT 20"
 ```
 
 ```
-SELECT hcrank100s, url_host_name_reversed, fetch_200, fetch_200_lote_pct FROM eot2020_host WHERE fetch_200_lote_pct > 10 AND url_host_tld = 'gov' AND is_us_federal ORDER BY hcrank100s DESC LIMIT 20
-┌────────────┬─────────────────────────┬───────────┬────────────────────┐
-│ hcrank100s │ url_host_name_reversed  │ fetch_200 │ fetch_200_lote_pct │
-│   int32    │         varchar         │   int64   │        int8        │
-├────────────┼─────────────────────────┼───────────┼────────────────────┤
-│        100 │ gov.irs                 │    285880 │                 33 │
-│        100 │ gov.usa                 │     10153 │                 12 │
-│        100 │ gov.fema                │     90320 │                 21 │
-│        100 │ gov.medlineplus.www     │     80914 │                 22 │
-│         99 │ gov.uscis               │     30177 │                 13 │
-│         99 │ gov.womenshealth.www    │     10399 │                 14 │
-│         99 │ gov.atf.www             │     46592 │                 11 │
-│         98 │ gov.uscg.navcen         │     58883 │                 15 │
-│         98 │ gov.loc.cdn             │     67138 │                 17 │
-│         98 │ gov.nasa.nascom.sohowww │    258690 │                 15 │
-│         98 │ gov.fec.transition      │     21291 │                 13 │
-│         98 │ gov.usembassy.mx        │     12447 │                 26 │
-│         98 │ gov.hhs.acf.ohs.eclkc   │     93908 │                 21 │
-│         98 │ gov.vaccines            │      1401 │                 12 │
-│         98 │ gov.nasa.gsfc.lambda    │     42493 │                 25 │
-│         98 │ gov.econsumer.www       │      2104 │                 21 │
-│         98 │ gov.nasa.nascom.soho    │    228403 │                 14 │
-│         97 │ gov.usembassy.kr        │      8177 │                 11 │
-│         97 │ gov.america.share.www   │    158923 │                 32 │
-│         97 │ gov.nasa.gsfc.asd       │     37567 │                 13 │
-├────────────┴─────────────────────────┴───────────┴────────────────────┤
-│ 20 rows                                                     4 columns │
-└───────────────────────────────────────────────────────────────────────┘
+SELECT hcrank100s, url_host_name_reversed, fetch_200, fetch_200_lote_pct FROM eot_host WHERE fetch_200_lote_pct > 10 AND url_host_tld = 'gov' AND is_us_federal AND eot = 2020 ORDER BY hcrank100s DESC LIMIT 20
+┌────────────┬────────────────────────────┬───────────┬────────────────────┐
+│ hcrank100s │   url_host_name_reversed   │ fetch_200 │ fetch_200_lote_pct │
+│   int32    │          varchar           │   int64   │        int8        │
+├────────────┼────────────────────────────┼───────────┼────────────────────┤
+│        100 │ gov.irs                    │    285880 │                 33 │
+│        100 │ gov.usa                    │     10153 │                 12 │
+│        100 │ gov.fema                   │     90320 │                 21 │
+│        100 │ gov.medlineplus.www        │     80914 │                 22 │
+│         99 │ gov.uscis                  │     30177 │                 13 │
+│         99 │ gov.womenshealth.www       │     10399 │                 14 │
+│         99 │ gov.atf.www                │     46592 │                 11 │
+│         98 │ gov.uscg.navcen            │     58883 │                 15 │
+│         98 │ gov.loc.cdn                │     67138 │                 17 │
+│         98 │ gov.nasa.nascom.sohowww    │    258690 │                 15 │
+│         98 │ gov.fec.transition         │     21291 │                 13 │
+│         98 │ gov.usembassy.mx           │     12447 │                 26 │
+│         98 │ gov.hhs.acf.ohs.eclkc      │     93908 │                 21 │
+│         98 │ gov.vaccines               │      1401 │                 12 │
+│         98 │ gov.nasa.gsfc.lambda       │     42493 │                 25 │
+│         98 │ gov.econsumer.www          │      2104 │                 21 │
+│         98 │ gov.nasa.nascom.soho       │    228403 │                 14 │
+│         97 │ gov.america.share.www      │    158923 │                 32 │
+│         97 │ gov.usgs.wr.planetarynames │      9058 │                 21 │
+│         97 │ gov.cdc.espanol            │     16039 │                 20 │
+├────────────┴────────────────────────────┴───────────┴────────────────────┤
+│ 20 rows                                                        4 columns │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### What are the top US federal government websites according to harmonic centrality?
 
 ```bash
-python ./select.py "url_host_name, is_us_federal, fetch_200, hcrank_pos, hcrank_raw, hcrank100s" "is_us_federal is TRUE ORDER BY hcrank_pos ASC LIMIT 10"
+python ./select.py "url_host_name, is_us_federal, fetch_200, hcrank_pos, hcrank_raw, hcrank100s" "is_us_federal AND eot = 2020 ORDER BY hcrank_pos ASC LIMIT 10"
 ```
 
 ```
-SELECT url_host_name, is_us_federal, fetch_200, hcrank_pos, hcrank_raw, hcrank100s FROM eot2020_host WHERE is_us_federal is TRUE ORDER BY hcrank_pos ASC LIMIT 10
+SELECT url_host_name, is_us_federal, fetch_200, hcrank_pos, hcrank_raw, hcrank100s FROM eot_host WHERE is_us_federal AND eot = 2020 ORDER BY hcrank_pos ASC LIMIT 10
 ┌───────────────────────┬───────────────┬───────────┬────────────┬────────────┬────────────┐
 │     url_host_name     │ is_us_federal │ fetch_200 │ hcrank_pos │ hcrank_raw │ hcrank100s │
 │        varchar        │    boolean    │   int64   │   int64    │   double   │   int32    │
 ├───────────────────────┼───────────────┼───────────┼────────────┼────────────┼────────────┤
-│ www.wordpress.com     │ true          │      2226 │         88 │ 23860242.0 │        100 │
-│ tumblr.com            │ true          │      2638 │        110 │ 23508414.0 │        100 │
 │ www.nasa.gov          │ true          │     26809 │        128 │ 23268830.0 │        100 │
 │ cdc.gov               │ true          │    777329 │        140 │ 23232876.0 │        100 │
 │ www.ncbi.nlm.nih.gov  │ true          │   3641163 │        178 │ 23025570.0 │        100 │
@@ -340,240 +381,138 @@ SELECT url_host_name, is_us_federal, fetch_200, hcrank_pos, hcrank_raw, hcrank10
 │ www.privacyshield.gov │ true          │      2712 │        368 │ 22142958.0 │        100 │
 │ www.fda.gov           │ true          │     15471 │        383 │ 22108202.0 │        100 │
 │ ftc.gov               │ true          │    281639 │        526 │ 21787366.0 │        100 │
-├───────────────────────┴───────────────┴───────────┴────────────┴────────────┴────────────┤
-│ 10 rows                                                                        6 columns │
-└──────────────────────────────────────────────────────────────────────────────────────────┘
+│ justice.gov           │ true          │   2324332 │        550 │ 21741378.0 │        100 │
+│ www.nps.gov           │ true          │    318360 │        572 │ 21716190.0 │        100 │
+└───────────────────────┴───────────────┴───────────┴────────────┴────────────┴────────────┘
 ```
 
-> [!WARNING]
-> The `is_us_federal` column contains some false-positives like `wordpress.com` or `tumblr.com`.
+## Comparing EOT-2020 and EOT-2024
 
+Because both crawls live in the same dataset, `GROUP BY eot` gives a side-by-side
+view. How many hosts, federal hosts, and successful fetches does each crawl have?
+
+```bash
+python ./select.py "eot, COUNT(*) AS hosts, COUNT(*) FILTER (WHERE is_us_federal) AS federal_hosts, SUM(fetch_200) AS fetch_200" "TRUE GROUP BY eot ORDER BY eot"
+```
+
+```
+┌───────┬─────────┬───────────────┬────────────┐
+│  eot  │  hosts  │ federal_hosts │ fetch_200  │
+│ int64 │  int64  │     int64     │   int128   │
+├───────┼─────────┼───────────────┼────────────┤
+│  2020 │ 1183935 │         29330 │ 1621287473 │
+│  2024 │ 1187443 │         39687 │ 3688514985 │
+└───────┴─────────┴───────────────┴────────────┘
+```
+
+And here's congress.gov in both crawls -- selecting `eot` keeps the crawl year
+in the output:
+
+```bash
+python ./select.py "eot, fetch_200, fetch_3xx, fetch_4xx, robots_200, hcrank_pos, prank_pos" "surt_host_name = 'gov,congress' ORDER BY eot"
+```
+
+```
+┌───────┬───────────┬───────────┬───────────┬────────────┬────────────┬───────────┐
+│  eot  │ fetch_200 │ fetch_3xx │ fetch_4xx │ robots_200 │ hcrank_pos │ prank_pos │
+│ int64 │   int64   │   int64   │   int64   │   int64    │   int64    │   int64   │
+├───────┼───────────┼───────────┼───────────┼────────────┼────────────┼───────────┤
+│  2020 │   2819681 │         0 │   1933097 │     771803 │       1172 │      1793 │
+│  2024 │   1147686 │         0 │    610001 │     415191 │        802 │      1775 │
+└───────┴───────────┴───────────┴───────────┴────────────┴────────────┴───────────┘
+```
+
+The top federal hosts by harmonic centrality in EOT-2024:
+
+```bash
+python ./select.py "url_host_name, fetch_200, hcrank_pos, hcrank100s" "is_us_federal AND eot = 2024 ORDER BY hcrank_pos ASC LIMIT 10"
+```
+
+```
+┌─────────────────────────────┬───────────┬────────────┬────────────┐
+│        url_host_name        │ fetch_200 │ hcrank_pos │ hcrank100s │
+│           varchar           │   int64   │   int64    │   int32    │
+├─────────────────────────────┼───────────┼────────────┼────────────┤
+│ www.ncbi.nlm.nih.gov        │ 157549482 │         48 │        100 │
+│ www.ftc.gov                 │    338452 │         77 │        100 │
+│ whitehouse.gov              │    343131 │        218 │        100 │
+│ www.irs.gov                 │   1828589 │        283 │        100 │
+│ www.census.gov              │  13776171 │        303 │        100 │
+│ www.pubmed.ncbi.nlm.nih.gov │  83388733 │        309 │        100 │
+│ fda.gov                     │   1126806 │        314 │        100 │
+│ www.nasa.gov                │   2151308 │        319 │        100 │
+│ loc.gov                     │  17642789 │        352 │        100 │
+│ www.justice.gov             │   1487783 │        361 │        100 │
+└─────────────────────────────┴───────────┴────────────┴────────────┘
+```
 
 ## Let's also look at the url index
 
 [The url index schema is described elsewhere.](https://commoncrawl.org/columnar-index)
-We won't download the entire index like we did before -- the helper
-program `url-select.py` tells duckdb to directly access the parquet
-files from s3.
+The url index is much larger than the host index, so we won't download it -- the
+helper program `url-select.py` tells duckdb to directly access the parquet files
+from s3 (this needs AWS credentials).
 
-### What are those 4xxs for congress.gov?
+Like the host index, the url index is hive-partitioned -- by `crawl` -- so every
+row carries a `crawl` column (`EOT-2020`, `EOT-2024`, ...) and the view is named
+`eot_url`. Because this index is many GB per crawl, **always** narrow your query:
+add `crawl = 'EOT-2024'` so duckdb can prune to one crawl, and filter on a host so
+it can skip row groups.
 
-First let's look at all non-200s:
+> [!NOTE]
+> In Common Crawl's normal url index there's a `subset = 'robotstxt'` hive
+> partition. To find robots.txt records in the EOT url index, filter on
+> `url_path = '/robots.txt'` instead.
 
-```bash
-python ./url-select.py "url, fetch_status" "url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status <> 200 LIMIT 10"
-```
+### congress.gov's robots.txt across both crawls
 
-```
-SELECT url, fetch_status FROM eot2020_url WHERE url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status <> 200 LIMIT 10
-┌───────────────────────────┬──────────────┐
-│            url            │ fetch_status │
-│          varchar          │    int16     │
-├───────────────────────────┼──────────────┤
-│ http://www.congress.gov// │          301 │
-│ http://www.congress.gov/  │          301 │
-│ https://www.congress.gov/ │          400 │
-│ http://congress.gov/      │          301 │
-│ http://www.congress.gov/  │          301 │
-│ https://congress.gov/     │          302 │
-│ http://congress.gov/      │          301 │
-│ http://www.congress.gov/  │          301 │
-│ https://congress.gov/     │          302 │
-│ http://congress.gov/      │          301 │
-├───────────────────────────┴──────────────┤
-│ 10 rows                        2 columns │
-└──────────────────────────────────────────┘
-```
-
-OK but what about 4xx/5xx?
+congress.gov returns a 400 for its robots.txt. Has that changed between crawls?
+A `GROUP BY crawl` answers it:
 
 ```bash
-python ./url-select.py "url, fetch_status" "url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status >= 400 LIMIT 10"
+python ./url-select.py "crawl, fetch_status, COUNT(*)" "url_host_name = 'www.congress.gov' AND url_path = '/robots.txt' AND fetch_status >= 400 AND crawl IN ('EOT-2020','EOT-2024') GROUP BY crawl, fetch_status ORDER BY crawl, fetch_status"
 ```
 
 ```
-SELECT url, fetch_status FROM eot2020_url WHERE url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status >= 400 LIMIT 10
-┌──────────────────────────────────────────────────────────────────────┬──────────────┐
-│                                 url                                  │ fetch_status │
-│                               varchar                                │    int16     │
-├──────────────────────────────────────────────────────────────────────┼──────────────┤
-│ https://www.congress.gov/                                            │          400 │
-│ https://www.congress.gov/%20-%20legislation-text                     │          404 │
-│ https://www.congress.gov/'/'                                         │          404 │
-│ https://www.congress.gov/103/bills/hjres281/BILLS-103hjres281cph.pdf │          400 │
-│ https://www.congress.gov/103/bills/hr1804/BILLS-103hr1804pcs.pdf     │          400 │
-│ https://www.congress.gov/103/bills/hr1834/BILLS-103hr1834ih.pdf      │          400 │
-│ https://www.congress.gov/103/bills/hr20/BILLS-103hr20cds.pdf         │          400 │
-│ https://www.congress.gov/103/bills/hr2876/BILLS-103hr2876eh.pdf      │          400 │
-│ https://www.congress.gov/103/bills/hr3508/BILLS-103hr3508eh.pdf      │          503 │
-│ https://www.congress.gov/103/bills/hr4165/BILLS-103hr4165ih.pdf      │          400 │
-├──────────────────────────────────────────────────────────────────────┴──────────────┤
-│ 10 rows                                                                   2 columns │
-└─────────────────────────────────────────────────────────────────────────────────────┘
+SELECT crawl, fetch_status, COUNT(*) FROM eot_url WHERE url_host_name = 'www.congress.gov' AND url_path = '/robots.txt' AND fetch_status >= 400 AND crawl IN ('EOT-2020','EOT-2024') GROUP BY crawl, fetch_status ORDER BY crawl, fetch_status
+┌──────────┬──────────────┬──────────────┐
+│  crawl   │ fetch_status │ count_star() │
+│ varchar  │    int16     │    int64     │
+├──────────┼──────────────┼──────────────┤
+│ EOT-2020 │          400 │          300 │
+│ EOT-2024 │          403 │          457 │
+│ EOT-2024 │          429 │            2 │
+└──────────┴──────────────┴──────────────┘
 ```
 
-404s are fetch_gone, so the 400s and 503 are concerning.
+The 400s from EOT-2020 became 403s (plus a couple of 429 rate-limits) in
+EOT-2024 -- the bot defenses changed but congress.gov still won't serve its
+robots.txt to the crawler.
 
-How about for robots? (Note the trick of `url_path = '/robots.txt'` ... in Common Crawl's normal url index
-there's `subset = 'robotstxt'`, but that hive partition does not exist in the EOT2020 url index.)
+### What are some of the LOTE urls, for example on irs.gov in EOT-2024?
 
 ```bash
-python ./url-select.py "url, fetch_status" "url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' LIMIT 10"
+python ./url-select.py "url, content_languages" "crawl = 'EOT-2024' AND url_host_registered_domain = 'irs.gov' AND url_path NOT LIKE '/es%' AND content_languages NOT LIKE 'eng%' LIMIT 10"
 ```
 
 ```
-SELECT url, fetch_status FROM eot2020_url WHERE url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' LIMIT 10
-┌─────────────────────────────────────┬──────────────┐
-│                 url                 │ fetch_status │
-│               varchar               │    int16     │
-├─────────────────────────────────────┼──────────────┤
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-├─────────────────────────────────────┴──────────────┤
-│ 10 rows                                  2 columns │
-└────────────────────────────────────────────────────┘
+SELECT url, content_languages FROM eot_url WHERE crawl = 'EOT-2024' AND url_host_registered_domain = 'irs.gov' AND url_path NOT LIKE '/es%' AND content_languages NOT LIKE 'eng%' LIMIT 10
+┌──────────────────────────────────────────────────────────────────────────────────────┬───────────────────┐
+│                                         url                                          │ content_languages │
+│                                       varchar                                        │      varchar      │
+├──────────────────────────────────────────────────────────────────────────────────────┼───────────────────┤
+│ https://www.irs.gov/66C_qrW8OH_5XoHt2HCVdwkXUQA/1Q5mzcVkXcmJG1iL/YxxmKQ/CzBbPG/pXR0s │ dan,eng,nld       │
+│ https://www.irs.gov/help/information-about-federal-taxes-arabic                      │ ara,eng,kor       │
+│ https://www.irs.gov/help/information-about-federal-taxes-arabic                      │ ara,eng,kor       │
+│ https://www.irs.gov/help/information-about-federal-taxes-arabic                      │ ara,eng,kor       │
+│ https://www.irs.gov/help/information-about-federal-taxes-arabic                      │ ara,eng,kor       │
+│ https://www.irs.gov/help/information-about-federal-taxes-arabic                      │ ara,eng,kor       │
+│ https://www.irs.gov/help/information-about-federal-taxes-arabic                      │ ara,eng,kor       │
+│ https://www.irs.gov/help/information-about-federal-taxes-bengali                     │ ben,eng,asm       │
+│ https://www.irs.gov/help/information-about-federal-taxes-bengali                     │ ben,eng,asm       │
+│ https://www.irs.gov/help/information-about-federal-taxes-bengali                     │ ben,eng,asm       │
+└──────────────────────────────────────────────────────────────────────────────────────┴───────────────────┘
 ```
 
-Hm, and are there non-400s?
-
-```bash
-python ./url-select.py "url, fetch_status" "url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status > 400 AND url_path = '/robots.txt' LIMIT 10"
-```
-
-```
-SELECT url, fetch_status FROM eot2020_url WHERE url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status > 400 AND url_path = '/robots.txt' LIMIT 10
-┌─────────────────────────────────────────┬──────────────┐
-│                   url                   │ fetch_status │
-│                 varchar                 │    int16     │
-├─────────────────────────────────────────┼──────────────┤
-│ http://bioguide.congress.gov/robots.txt │          404 │
-│ http://bioguide.congress.gov/robots.txt │          404 │
-│ http://bioguide.congress.gov/robots.txt │          404 │
-│ http://bioguide.congress.gov/robots.txt │          404 │
-│ http://bioguide.congress.gov/robots.txt │          404 │
-│ http://bioguide.congress.gov/robots.txt │          404 │
-│ http://bioguide.congress.gov/robots.txt │          404 │
-│ http://bioguide.congress.gov/robots.txt │          404 │
-│ http://bioguide.congress.gov/robots.txt │          404 │
-│ http://bioguide.congress.gov/robots.txt │          404 │
-├─────────────────────────────────────────┴──────────────┤
-│ 10 rows                                      2 columns │
-└────────────────────────────────────────────────────────┘
-```
-
-Whoops, I meant to only look at the host congress.gov! Which has 2 host names, congress.gov and www.congress.gov. Having already
-noticed that congress.gov is a redirect, let's just look at www.congress.gov:
-
-```
-python ./url-select.py "url, fetch_status" "url_host_tld = 'gov' AND url_host_name = 'www.congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' LIMIT 10"
-SELECT url, fetch_status FROM eot2020_url WHERE url_host_tld = 'gov' AND url_host_name = 'www.congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' LIMIT 10
-┌─────────────────────────────────────┬──────────────┐
-│                 url                 │ fetch_status │
-│               varchar               │    int16     │
-├─────────────────────────────────────┼──────────────┤
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-│ https://www.congress.gov/robots.txt │          400 │
-├─────────────────────────────────────┴──────────────┤
-│ 10 rows                                  2 columns │
-└────────────────────────────────────────────────────┘
-```
-
-Are they all 400s? Let's try a GROUP BY:
-
-```
-python ./url-select.py "fetch_status, COUNT(*)" "url_host_tld = 'gov' AND url_host_name = 'www.congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' GROUP BY fetch_status"
-SELECT fetch_status, COUNT(*) FROM eot2020_url WHERE url_host_tld = 'gov' AND url_host_name = 'www.congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' GROUP BY fetch_status
-┌──────────────┬──────────────┐
-│ fetch_status │ count_star() │
-│    int16     │    int64     │
-├──────────────┼──────────────┤
-│          400 │          300 │
-└──────────────┴──────────────┘
-```
-
-### What are some of the LOTE urls, for example on irs.gov?
-
-```
-python ./url-select.py "url, content_languages" "url_host_registered_domain = 'irs.gov' AND content_languages NOT LIKE 'eng%' LIMIT 10"
-SELECT url, content_languages FROM eot2020_url WHERE url_host_registered_domain = 'irs.gov' AND content_languages NOT LIKE 'eng%' LIMIT 10
-┌────────────────────────┬───────────────────┐
-│          url           │ content_languages │
-│        varchar         │      varchar      │
-├────────────────────────┼───────────────────┤
-│ https://www.irs.gov/es │ spa,eng,kor       │
-│ https://www.irs.gov/es │ spa,eng,kor       │
-│ https://www.irs.gov/es │ spa,eng,kor       │
-│ https://www.irs.gov/es │ spa,eng,kor       │
-│ https://www.irs.gov/es │ spa,eng,kor       │
-│ https://www.irs.gov/es │ spa,eng,kor       │
-│ https://www.irs.gov/es │ spa,eng,kor       │
-│ https://www.irs.gov/es │ spa,eng,kor       │
-│ https://www.irs.gov/es │ spa,eng,kor       │
-│ https://www.irs.gov/es │ spa,eng,kor       │
-├────────────────────────┴───────────────────┤
-│ 10 rows                          2 columns │
-└────────────────────────────────────────────┘
-```
-Boring. Let's look at non-'/es' paths:
-
-```
-python ./url-select.py "url, content_languages" "url_host_registered_domain = 'irs.gov' AND url_path <> '/es' AND content_languages NOT LIKE 'eng%' LIMIT 10"
-SELECT url, content_languages FROM eot2020_url WHERE url_host_registered_domain = 'irs.gov' AND url_path <> '/es' AND content_languages NOT LIKE 'eng%' LIMIT 10
-┌─────────────────────────────────────────────────────────────────────────────────────────────────────┬───────────────────┐
-│                                                 url                                                 │ content_languages │
-│                                               varchar                                               │      varchar      │
-├─────────────────────────────────────────────────────────────────────────────────────────────────────┼───────────────────┤
-│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
-│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
-│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
-│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
-│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
-│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
-│ https://www.irs.gov/es/'https://www.irs.gov/es/charities-and-nonprofits'                            │ spa,eng,kor       │
-│ https://www.irs.gov/es/'https://www.irs.gov/es/coronavirus-tax-relief-and-economic-impact-payments' │ spa,eng,kor       │
-│ https://www.irs.gov/es/'https://www.irs.gov/es/coronavirus-tax-relief-and-economic-impact-payments' │ spa,eng,kor       │
-│ https://www.irs.gov/es/'https://www.irs.gov/es/coronavirus-tax-relief-and-economic-impact-payments' │ spa,eng,kor       │
-├─────────────────────────────────────────────────────────────────────────────────────────────────────┴───────────────────┤
-│ 10 rows                                                                                                       2 columns │
-└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-```
-Those are all mangled. Let's try excluding '/es%':
-
-```
-python ./url-select.py "url, content_languages" "url_host_registered_domain = 'irs.gov' AND url_path NOT LIKE '/es%' AND content_languages NOT LIKE 'eng%' LIMIT 10" 
-SELECT url, content_languages FROM eot2020_url WHERE url_host_registered_domain = 'irs.gov' AND url_path NOT LIKE '/es%' AND content_languages NOT LIKE 'eng%' LIMIT 10
-┌──────────────────────────────────────────────────────────────────────────────┬───────────────────┐
-│                                     url                                      │ content_languages │
-│                                   varchar                                    │      varchar      │
-├──────────────────────────────────────────────────────────────────────────────┼───────────────────┤
-│ https://www.irs.gov/help/information-about-federal-taxes-arabic              │ ara,eng,xho       │
-│ https://www.irs.gov/help/information-about-federal-taxes-arabic              │ ara,eng,xho       │
-│ https://www.irs.gov/help/information-about-federal-taxes-bengali             │ ben,eng,xho       │
-│ https://www.irs.gov/help/information-about-federal-taxes-bengali             │ ben,eng,xho       │
-│ https://www.irs.gov/help/information-about-federal-taxes-chinese-traditional │ zho,eng,ind       │
-│ https://www.irs.gov/help/information-about-federal-taxes-chinese-traditional │ zho,eng,ind       │
-│ https://www.irs.gov/help/information-about-federal-taxes-farsi               │ fas,eng,urd       │
-│ https://www.irs.gov/help/information-about-federal-taxes-farsi               │ fas,eng,urd       │
-│ https://www.irs.gov/help/information-about-federal-taxes-french              │ fra,eng,kor       │
-│ https://www.irs.gov/help/information-about-federal-taxes-french              │ fra,eng,kor       │
-├──────────────────────────────────────────────────────────────────────────────┴───────────────────┤
-│ 10 rows                                                                                2 columns │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
-```
-Jackpot!
+This streams the matching urls (non-`/es` paths whose primary language isn't
+English) directly from the EOT-2024 partition.
