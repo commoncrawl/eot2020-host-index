@@ -22,6 +22,12 @@ import duckdb
 what = sys.argv[1]
 where = sys.argv[2]
 
+if not what:
+    raise ValueError("`what` parameter is missing")
+
+if not where:
+    raise ValueError("`where` parameter is missing")
+
 # Hive partitions currently published: (version v, crawl year eot).
 partitions = [(5, 2020), (5, 2024)]
 relative = 'v={v}/eot={eot}/host-index.parquet'
