@@ -9,15 +9,15 @@ https://eotarchive.org/
 
 It currently covers two crawls, **EOT-2020** and **EOT-2024**. The data is
 stored as a hive-partitioned parquet dataset, partitioned by version (`v`) and
-crawl year (`crawl`):
+crawl (`crawl`):
 
 ```
-v=5/crawl=2020/host-index.parquet
-v=5/crawl=2024/host-index.parquet
+v=5/crawl=EOT-2020/host-index.parquet
+v=5/crawl=EOT-2024/host-index.parquet
 ```
 
 Every row therefore carries a `crawl` column (and a `v` column), so a single
-query can look at one crawl (`WHERE crawl = 2024`) or compare both (`GROUP BY
+query can look at one crawl (`WHERE crawl = 'EOT-2024'`) or compare both (`GROUP BY
 crawl`).
 
 The dataset is available two ways:
@@ -43,7 +43,7 @@ The helper scripts read the dataset directly from its source -- no download
 needed. To inspect the schema over HTTP:
 
 ```bash
-duckdb -c "DESCRIBE FROM read_parquet('https://data.commoncrawl.org/projects/eot-host-index-testing/v=5/crawl=2024/host-index.parquet')"
+duckdb -c "DESCRIBE FROM read_parquet('https://data.commoncrawl.org/projects/eot-host-index-testing/v=5/crawl=EOT-2024/host-index.parquet')"
 ```
 
 To inspect both crawls at once (and see the `v`/`crawl` partition columns), point
@@ -96,7 +96,7 @@ duckdb -c "DESCRIBE FROM read_parquet('s3://commoncrawl/projects/eot-host-index-
 │ prank100s                  │ INTEGER     │ YES     │ NULL    │ NULL    │ NULL    │
 │ prank100p                  │ INTEGER     │ YES     │ NULL    │ NULL    │ NULL    │
 │ is_us_federal              │ BOOLEAN     │ YES     │ NULL    │ NULL    │ NULL    │
-│ crawl                      │ BIGINT      │ YES     │ NULL    │ NULL    │ NULL    │
+│ crawl                      │ VARCHAR     │ YES     │ NULL    │ NULL    │ NULL    │
 │ v                          │ BIGINT      │ YES     │ NULL    │ NULL    │ NULL    │
 └────────────────────────────┴─────────────┴─────────┴─────────┴─────────┴─────────┘
   38 rows                                                                6 columns
@@ -107,7 +107,7 @@ The schema has multiple parts:
 
 ### Partitioning
 
-- `crawl` is the crawl year, `2020` or `2024`
+- `crawl` is the EOT crawl, `EOT-2020` or `EOT-2024`
 - `v` is the version of the host index (currently `5`)
 
 These are hive partition columns derived from the file path; filtering on `crawl`
@@ -159,22 +159,22 @@ EOT_SOURCE=s3 python select.py "crawl, COUNT(*) AS hosts, COUNT(*) FILTER (WHERE
 ```
 
 ```
-┌───────┬────────┬───────────────┐
-│ crawl │ hosts  │ federal_hosts │
-│ int64 │ int64  │     int64     │
-├───────┼────────┼───────────────┤
-│  2020 │  52536 │         27889 │
-│  2024 │ 108162 │         37248 │
-└───────┴────────┴───────────────┘
+┌──────────┬────────┬───────────────┐
+│  crawl   │ hosts  │ federal_hosts │
+│ varchar  │ int64  │     int64     │
+├──────────┼────────┼───────────────┤
+│ EOT-2020 │  52536 │         27889 │
+│ EOT-2024 │ 108162 │         37248 │
+└──────────┴────────┴───────────────┘
 ```
 
 Because the index spans two crawls, every query should either filter on a
-specific `crawl` (e.g. `crawl = 2020`) or `GROUP BY crawl` (so the crawl year is part
+specific `crawl` (e.g. `crawl = 'EOT-2020'`) or `GROUP BY crawl` (so the crawl is part
 of the output). The walkthrough below looks at **congress.gov** in EOT-2020;
 we'll save some typing with a shell variable that pins the crawl:
 
 ```bash
-WHERE="surt_host_name = 'gov,congress' AND crawl = 2020"
+WHERE="surt_host_name = 'gov,congress' AND crawl = 'EOT-2020'"
 ```
 
 ### Names
@@ -284,11 +284,11 @@ python ./select.py "hcrank_raw, hcrank_pos, prank_raw, prank_pos" "$WHERE"
 This needs a different WHERE clause (still pinned to one crawl):
 
 ```bash
-python ./select.py "url_host_name, url_host_name_reversed, is_us_federal, hcrank100s, hcrank100p, prank100s, prank100p" "url_host_registered_domain = 'congress.gov' AND crawl = 2020"
+python ./select.py "url_host_name, url_host_name_reversed, is_us_federal, hcrank100s, hcrank100p, prank100s, prank100p" "url_host_registered_domain = 'congress.gov' AND crawl = 'EOT-2020'"
 ```
 
 ```
-SELECT url_host_name, url_host_name_reversed, is_us_federal, hcrank100s, hcrank100p, prank100s, prank100p FROM eot_host WHERE url_host_registered_domain = 'congress.gov' AND crawl = 2020
+SELECT url_host_name, url_host_name_reversed, is_us_federal, hcrank100s, hcrank100p, prank100s, prank100p FROM eot_host WHERE url_host_registered_domain = 'congress.gov' AND crawl = 'EOT-2020'
 ┌────────────────────────────┬────────────────────────────┬───────────────┬────────────┬────────────┬───────────┬───────────┐
 │       url_host_name        │   url_host_name_reversed   │ is_us_federal │ hcrank100s │ hcrank100p │ prank100s │ prank100p │
 │          varchar           │          varchar           │    boolean    │   int32    │   int32    │   int32   │   int32   │
@@ -310,11 +310,11 @@ SELECT url_host_name, url_host_name_reversed, is_us_federal, hcrank100s, hcrank1
 ### What are the highest ranked federal .gov hosts that we have nothing for?
 
 ```bash
-python ./select.py "url_host_name_reversed, hcrank100s" "url_host_tld = 'gov' AND is_us_federal AND fetch_200 = 0 AND crawl = 2020 ORDER BY hcrank100s DESC LIMIT 10"
+python ./select.py "url_host_name_reversed, hcrank100s" "url_host_tld = 'gov' AND is_us_federal AND fetch_200 = 0 AND crawl = 'EOT-2020' ORDER BY hcrank100s DESC LIMIT 10"
 ```
 
 ```
-SELECT url_host_name_reversed, hcrank100s FROM eot_host WHERE url_host_tld = 'gov' AND is_us_federal AND fetch_200 = 0 AND crawl = 2020 ORDER BY hcrank100s DESC LIMIT 10
+SELECT url_host_name_reversed, hcrank100s FROM eot_host WHERE url_host_tld = 'gov' AND is_us_federal AND fetch_200 = 0 AND crawl = 'EOT-2020' ORDER BY hcrank100s DESC LIMIT 10
 ┌────────────────────────┬────────────┐
 │ url_host_name_reversed │ hcrank100s │
 │        varchar         │   int32    │
@@ -327,11 +327,11 @@ Well that was boring.
 ### What hosts have a large fraction of LOTE (languages other than english) pages?
 
 ```bash
-python ./select.py "hcrank100s, url_host_name_reversed, fetch_200, fetch_200_lote_pct" "fetch_200_lote_pct > 10 AND url_host_tld = 'gov' AND is_us_federal AND crawl = 2020 ORDER BY hcrank100s DESC LIMIT 20"
+python ./select.py "hcrank100s, url_host_name_reversed, fetch_200, fetch_200_lote_pct" "fetch_200_lote_pct > 10 AND url_host_tld = 'gov' AND is_us_federal AND crawl = 'EOT-2020' ORDER BY hcrank100s DESC LIMIT 20"
 ```
 
 ```
-SELECT hcrank100s, url_host_name_reversed, fetch_200, fetch_200_lote_pct FROM eot_host WHERE fetch_200_lote_pct > 10 AND url_host_tld = 'gov' AND is_us_federal AND crawl = 2020 ORDER BY hcrank100s DESC LIMIT 20
+SELECT hcrank100s, url_host_name_reversed, fetch_200, fetch_200_lote_pct FROM eot_host WHERE fetch_200_lote_pct > 10 AND url_host_tld = 'gov' AND is_us_federal AND crawl = 'EOT-2020' ORDER BY hcrank100s DESC LIMIT 20
 ┌────────────┬────────────────────────────┬───────────┬────────────────────┐
 │ hcrank100s │   url_host_name_reversed   │ fetch_200 │ fetch_200_lote_pct │
 │   int32    │          varchar           │   int64   │        int8        │
@@ -364,11 +364,11 @@ SELECT hcrank100s, url_host_name_reversed, fetch_200, fetch_200_lote_pct FROM eo
 ### What are the top US federal government websites according to harmonic centrality?
 
 ```bash
-python ./select.py "url_host_name, is_us_federal, fetch_200, hcrank_pos, hcrank_raw, hcrank100s" "is_us_federal AND crawl = 2020 ORDER BY hcrank_pos ASC LIMIT 10"
+python ./select.py "url_host_name, is_us_federal, fetch_200, hcrank_pos, hcrank_raw, hcrank100s" "is_us_federal AND crawl = 'EOT-2020' ORDER BY hcrank_pos ASC LIMIT 10"
 ```
 
 ```
-SELECT url_host_name, is_us_federal, fetch_200, hcrank_pos, hcrank_raw, hcrank100s FROM eot_host WHERE is_us_federal AND crawl = 2020 ORDER BY hcrank_pos ASC LIMIT 10
+SELECT url_host_name, is_us_federal, fetch_200, hcrank_pos, hcrank_raw, hcrank100s FROM eot_host WHERE is_us_federal AND crawl = 'EOT-2020' ORDER BY hcrank_pos ASC LIMIT 10
 ┌───────────────────────┬───────────────┬───────────┬────────────┬────────────┬────────────┐
 │     url_host_name     │ is_us_federal │ fetch_200 │ hcrank_pos │ hcrank_raw │ hcrank100s │
 │        varchar        │    boolean    │   int64   │   int64    │   double   │   int32    │
@@ -396,16 +396,16 @@ python ./select.py "crawl, COUNT(*) AS hosts, COUNT(*) FILTER (WHERE is_us_feder
 ```
 
 ```
-┌───────┬─────────┬───────────────┬────────────┐
-│ crawl │  hosts  │ federal_hosts │ fetch_200  │
-│ int64 │  int64  │     int64     │   int128   │
-├───────┼─────────┼───────────────┼────────────┤
-│  2020 │ 1183935 │         29330 │ 1621287473 │
-│  2024 │ 1187443 │         39687 │ 3688514985 │
-└───────┴─────────┴───────────────┴────────────┘
+┌──────────┬─────────┬───────────────┬────────────┐
+│  crawl   │  hosts  │ federal_hosts │ fetch_200  │
+│ varchar  │  int64  │     int64     │   int128   │
+├──────────┼─────────┼───────────────┼────────────┤
+│ EOT-2020 │ 1183935 │         29330 │ 1621287473 │
+│ EOT-2024 │ 1187443 │         39687 │ 3688514985 │
+└──────────┴─────────┴───────────────┴────────────┘
 ```
 
-And here's congress.gov in both crawls -- selecting `crawl` keeps the crawl year
+And here's congress.gov in both crawls -- selecting `crawl` keeps the crawl
 in the output:
 
 ```bash
@@ -413,19 +413,19 @@ python ./select.py "crawl, fetch_200, fetch_3xx, fetch_4xx, robots_200, hcrank_p
 ```
 
 ```
-┌───────┬───────────┬───────────┬───────────┬────────────┬────────────┬───────────┐
-│ crawl │ fetch_200 │ fetch_3xx │ fetch_4xx │ robots_200 │ hcrank_pos │ prank_pos │
-│ int64 │   int64   │   int64   │   int64   │   int64    │   int64    │   int64   │
-├───────┼───────────┼───────────┼───────────┼────────────┼────────────┼───────────┤
-│  2020 │   2819681 │         0 │   1933097 │     771803 │       1172 │      1793 │
-│  2024 │   1147686 │         0 │    610001 │     415191 │        802 │      1775 │
-└───────┴───────────┴───────────┴───────────┴────────────┴────────────┴───────────┘
+┌──────────┬───────────┬───────────┬───────────┬────────────┬────────────┬───────────┐
+│  crawl   │ fetch_200 │ fetch_3xx │ fetch_4xx │ robots_200 │ hcrank_pos │ prank_pos │
+│ varchar  │   int64   │   int64   │   int64   │   int64    │   int64    │   int64   │
+├──────────┼───────────┼───────────┼───────────┼────────────┼────────────┼───────────┤
+│ EOT-2020 │   2819681 │         0 │   1933097 │     771803 │       1172 │      1793 │
+│ EOT-2024 │   1147686 │         0 │    610001 │     415191 │        802 │      1775 │
+└──────────┴───────────┴───────────┴───────────┴────────────┴────────────┴───────────┘
 ```
 
 The top federal hosts by harmonic centrality in EOT-2024:
 
 ```bash
-python ./select.py "url_host_name, fetch_200, hcrank_pos, hcrank100s" "is_us_federal AND crawl = 2024 ORDER BY hcrank_pos ASC LIMIT 10"
+python ./select.py "url_host_name, fetch_200, hcrank_pos, hcrank100s" "is_us_federal AND crawl = 'EOT-2024' ORDER BY hcrank_pos ASC LIMIT 10"
 ```
 
 ```

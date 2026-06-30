@@ -3,15 +3,16 @@
 Usage:
     python select.py "<SELECT columns>" "<WHERE clause>"
 
-The host index is hive-partitioned by version (`v`) and EOT crawl year
+The host index is hive-partitioned by version (`v`) and EOT crawl
 (`crawl`), so every row carries `v` and `crawl` columns.  It is exposed as
 the view `eot_host` and read directly from the source (no download needed).
 
 By default the public HTTP mirror is used.  Set the environment variable
 EOT_SOURCE=s3 to read from S3 instead (needs AWS credentials).
 
-Add e.g. `crawl = 2024` to the WHERE clause to restrict a query to a single
-crawl; without it you query every crawl (currently 2020 and 2024).
+Add e.g. `crawl = 'EOT-2024'` to the WHERE clause to restrict a query to a
+single crawl; without it you query every crawl (currently EOT-2020 and
+EOT-2024).
 """
 import os
 import sys
@@ -28,8 +29,8 @@ if not what:
 if not where:
     raise ValueError("`where` parameter is missing")
 
-# Hive partitions currently published: (version v, crawl year).
-partitions = [(5, 2020), (5, 2024)]
+# Hive partitions currently published: (version v, crawl).
+partitions = [(5, 'EOT-2020'), (5, 'EOT-2024')]
 relative = 'v={v}/crawl={crawl}/host-index.parquet'
 
 source = os.environ.get('EOT_SOURCE', 'http').lower()
