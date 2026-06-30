@@ -456,18 +456,165 @@ from s3 (this needs AWS credentials).
 Like the host index, the url index is hive-partitioned -- by `crawl` -- so every
 row carries a `crawl` column (`EOT-2020`, `EOT-2024`, ...) and the view is named
 `eot_url`. Because this index is many GB per crawl, **always** narrow your query:
-add `crawl = 'EOT-2024'` so duckdb can prune to one crawl, and filter on a host so
-it can skip row groups.
+add a `crawl` filter (e.g. `crawl = 'EOT-2020'`) so duckdb can prune to one crawl,
+and filter on a host so it can skip row groups. The walkthrough below stays in
+EOT-2020 unless a query says otherwise.
 
 > [!NOTE]
 > In Common Crawl's normal url index there's a `subset = 'robotstxt'` hive
 > partition. To find robots.txt records in the EOT url index, filter on
 > `url_path = '/robots.txt'` instead.
 
-### congress.gov's robots.txt across both crawls
+### What are those 4xxs for congress.gov?
 
-congress.gov returns a 400 for its robots.txt. Has that changed between crawls?
-A `GROUP BY crawl` answers it:
+First let's look at all non-200s:
+
+```bash
+python ./url-select.py "url, fetch_status" "url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status <> 200 AND crawl = 'EOT-2020' LIMIT 10"
+```
+
+```
+SELECT url, fetch_status FROM eot_url WHERE url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status <> 200 AND crawl = 'EOT-2020' LIMIT 10
+┌───────────────────────────┬──────────────┐
+│            url            │ fetch_status │
+│          varchar          │    int16     │
+├───────────────────────────┼──────────────┤
+│ http://www.congress.gov// │          301 │
+│ http://www.congress.gov/  │          301 │
+│ https://www.congress.gov/ │          400 │
+│ http://congress.gov/      │          301 │
+│ http://www.congress.gov/  │          301 │
+│ https://congress.gov/     │          302 │
+│ http://congress.gov/      │          301 │
+│ http://www.congress.gov/  │          301 │
+│ https://congress.gov/     │          302 │
+│ http://congress.gov/      │          301 │
+└───────────────────────────┴──────────────┘
+```
+
+OK but what about 4xx/5xx?
+
+```bash
+python ./url-select.py "url, fetch_status" "url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status >= 400 AND crawl = 'EOT-2020' LIMIT 10"
+```
+
+```
+SELECT url, fetch_status FROM eot_url WHERE url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status >= 400 AND crawl = 'EOT-2020' LIMIT 10
+┌──────────────────────────────────────────────────────────────────────┬──────────────┐
+│                                 url                                  │ fetch_status │
+│                               varchar                                │    int16     │
+├──────────────────────────────────────────────────────────────────────┼──────────────┤
+│ https://www.congress.gov/                                            │          400 │
+│ https://www.congress.gov/%20-%20legislation-text                     │          404 │
+│ https://www.congress.gov/'/'                                         │          404 │
+│ https://www.congress.gov/103/bills/hjres281/BILLS-103hjres281cph.pdf │          400 │
+│ https://www.congress.gov/103/bills/hr1804/BILLS-103hr1804pcs.pdf     │          400 │
+│ https://www.congress.gov/103/bills/hr1834/BILLS-103hr1834ih.pdf      │          400 │
+│ https://www.congress.gov/103/bills/hr20/BILLS-103hr20cds.pdf         │          400 │
+│ https://www.congress.gov/103/bills/hr2876/BILLS-103hr2876eh.pdf      │          400 │
+│ https://www.congress.gov/103/bills/hr3508/BILLS-103hr3508eh.pdf      │          503 │
+│ https://www.congress.gov/103/bills/hr4165/BILLS-103hr4165ih.pdf      │          400 │
+└──────────────────────────────────────────────────────────────────────┴──────────────┘
+```
+
+404s are fetch_gone, so the 400s and 503 are concerning.
+
+How about for robots? (Recall we filter on `url_path = '/robots.txt'` here, per the
+note above.)
+
+```bash
+python ./url-select.py "url, fetch_status" "url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' AND crawl = 'EOT-2020' LIMIT 10"
+```
+
+```
+SELECT url, fetch_status FROM eot_url WHERE url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' AND crawl = 'EOT-2020' LIMIT 10
+┌─────────────────────────────────────┬──────────────┐
+│                 url                 │ fetch_status │
+│               varchar               │    int16     │
+├─────────────────────────────────────┼──────────────┤
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+└─────────────────────────────────────┴──────────────┘
+```
+
+Hm, and are there non-400s?
+
+```bash
+python ./url-select.py "url, fetch_status" "url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status > 400 AND url_path = '/robots.txt' AND crawl = 'EOT-2020' LIMIT 10"
+```
+
+```
+SELECT url, fetch_status FROM eot_url WHERE url_host_tld = 'gov' AND url_host_registered_domain = 'congress.gov' AND fetch_status > 400 AND url_path = '/robots.txt' AND crawl = 'EOT-2020' LIMIT 10
+┌─────────────────────────────────────────┬──────────────┐
+│                   url                   │ fetch_status │
+│                 varchar                 │    int16     │
+├─────────────────────────────────────────┼──────────────┤
+│ http://bioguide.congress.gov/robots.txt │          404 │
+│ http://bioguide.congress.gov/robots.txt │          404 │
+│ http://bioguide.congress.gov/robots.txt │          404 │
+│ http://bioguide.congress.gov/robots.txt │          404 │
+│ http://bioguide.congress.gov/robots.txt │          404 │
+│ http://bioguide.congress.gov/robots.txt │          404 │
+│ http://bioguide.congress.gov/robots.txt │          404 │
+│ http://bioguide.congress.gov/robots.txt │          404 │
+│ http://bioguide.congress.gov/robots.txt │          404 │
+│ http://bioguide.congress.gov/robots.txt │          404 │
+└─────────────────────────────────────────┴──────────────┘
+```
+
+Whoops, I meant to only look at the host congress.gov! Which has 2 host names,
+congress.gov and www.congress.gov. Having already noticed that congress.gov is a
+redirect, let's just look at www.congress.gov:
+
+```bash
+python ./url-select.py "url, fetch_status" "url_host_tld = 'gov' AND url_host_name = 'www.congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' AND crawl = 'EOT-2020' LIMIT 10"
+```
+
+```
+SELECT url, fetch_status FROM eot_url WHERE url_host_tld = 'gov' AND url_host_name = 'www.congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' AND crawl = 'EOT-2020' LIMIT 10
+┌─────────────────────────────────────┬──────────────┐
+│                 url                 │ fetch_status │
+│               varchar               │    int16     │
+├─────────────────────────────────────┼──────────────┤
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+│ https://www.congress.gov/robots.txt │          400 │
+└─────────────────────────────────────┴──────────────┘
+```
+
+Are they all 400s? Let's try a GROUP BY:
+
+```bash
+python ./url-select.py "fetch_status, COUNT(*)" "url_host_tld = 'gov' AND url_host_name = 'www.congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' AND crawl = 'EOT-2020' GROUP BY fetch_status"
+```
+
+```
+SELECT fetch_status, COUNT(*) FROM eot_url WHERE url_host_tld = 'gov' AND url_host_name = 'www.congress.gov' AND fetch_status >= 400 AND url_path = '/robots.txt' AND crawl = 'EOT-2020' GROUP BY fetch_status
+┌──────────────┬──────────────┐
+│ fetch_status │ count_star() │
+│    int16     │    int64     │
+├──────────────┼──────────────┤
+│          400 │          300 │
+└──────────────┴──────────────┘
+```
+
+Did that change by EOT-2024? Because the index spans both crawls, a `GROUP BY
+crawl` compares them side by side:
 
 ```bash
 python ./url-select.py "crawl, fetch_status, COUNT(*)" "url_host_name = 'www.congress.gov' AND url_path = '/robots.txt' AND fetch_status >= 400 AND crawl IN ('EOT-2020','EOT-2024') GROUP BY crawl, fetch_status ORDER BY crawl, fetch_status"
@@ -489,14 +636,88 @@ The 400s from EOT-2020 became 403s (plus a couple of 429 rate-limits) in
 EOT-2024 -- the bot defenses changed but congress.gov still won't serve its
 robots.txt to the crawler.
 
-### What are some of the LOTE urls, for example on irs.gov in EOT-2024?
+### What are some of the LOTE urls, for example on irs.gov?
 
 ```bash
-python ./url-select.py "url, content_languages" "crawl = 'EOT-2024' AND url_host_registered_domain = 'irs.gov' AND url_path NOT LIKE '/es%' AND content_languages NOT LIKE 'eng%' LIMIT 10"
+python ./url-select.py "url, content_languages" "url_host_registered_domain = 'irs.gov' AND content_languages NOT LIKE 'eng%' AND crawl = 'EOT-2020' LIMIT 10"
 ```
 
 ```
-SELECT url, content_languages FROM eot_url WHERE crawl = 'EOT-2024' AND url_host_registered_domain = 'irs.gov' AND url_path NOT LIKE '/es%' AND content_languages NOT LIKE 'eng%' LIMIT 10
+SELECT url, content_languages FROM eot_url WHERE url_host_registered_domain = 'irs.gov' AND content_languages NOT LIKE 'eng%' AND crawl = 'EOT-2020' LIMIT 10
+┌────────────────────────┬───────────────────┐
+│          url           │ content_languages │
+│        varchar         │      varchar      │
+├────────────────────────┼───────────────────┤
+│ https://www.irs.gov/es │ spa,eng,kor       │
+│ https://www.irs.gov/es │ spa,eng,kor       │
+│ https://www.irs.gov/es │ spa,eng,kor       │
+│ https://www.irs.gov/es │ spa,eng,kor       │
+│ https://www.irs.gov/es │ spa,eng,kor       │
+│ https://www.irs.gov/es │ spa,eng,kor       │
+│ https://www.irs.gov/es │ spa,eng,kor       │
+│ https://www.irs.gov/es │ spa,eng,kor       │
+│ https://www.irs.gov/es │ spa,eng,kor       │
+│ https://www.irs.gov/es │ spa,eng,kor       │
+└────────────────────────┴───────────────────┘
+```
+Boring. Let's look at non-'/es' paths:
+
+```bash
+python ./url-select.py "url, content_languages" "url_host_registered_domain = 'irs.gov' AND url_path <> '/es' AND content_languages NOT LIKE 'eng%' AND crawl = 'EOT-2020' LIMIT 10"
+```
+
+```
+SELECT url, content_languages FROM eot_url WHERE url_host_registered_domain = 'irs.gov' AND url_path <> '/es' AND content_languages NOT LIKE 'eng%' AND crawl = 'EOT-2020' LIMIT 10
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────┬───────────────────┐
+│                                                 url                                                 │ content_languages │
+│                                               varchar                                               │      varchar      │
+├─────────────────────────────────────────────────────────────────────────────────────────────────────┼───────────────────┤
+│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es'                                                     │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es/charities-and-nonprofits'                            │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es/coronavirus-tax-relief-and-economic-impact-payments' │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es/coronavirus-tax-relief-and-economic-impact-payments' │ spa,eng,kor       │
+│ https://www.irs.gov/es/'https://www.irs.gov/es/coronavirus-tax-relief-and-economic-impact-payments' │ spa,eng,kor       │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────┴───────────────────┘
+```
+Those are all mangled. Let's try excluding '/es%':
+
+```bash
+python ./url-select.py "url, content_languages" "url_host_registered_domain = 'irs.gov' AND url_path NOT LIKE '/es%' AND content_languages NOT LIKE 'eng%' AND crawl = 'EOT-2020' LIMIT 10"
+```
+
+```
+SELECT url, content_languages FROM eot_url WHERE url_host_registered_domain = 'irs.gov' AND url_path NOT LIKE '/es%' AND content_languages NOT LIKE 'eng%' AND crawl = 'EOT-2020' LIMIT 10
+┌──────────────────────────────────────────────────────────────────────────────┬───────────────────┐
+│                                     url                                      │ content_languages │
+│                                   varchar                                    │      varchar      │
+├──────────────────────────────────────────────────────────────────────────────┼───────────────────┤
+│ https://www.irs.gov/help/information-about-federal-taxes-arabic              │ ara,eng,xho       │
+│ https://www.irs.gov/help/information-about-federal-taxes-arabic              │ ara,eng,xho       │
+│ https://www.irs.gov/help/information-about-federal-taxes-bengali             │ ben,eng,xho       │
+│ https://www.irs.gov/help/information-about-federal-taxes-bengali             │ ben,eng,xho       │
+│ https://www.irs.gov/help/information-about-federal-taxes-chinese-traditional │ zho,eng,ind       │
+│ https://www.irs.gov/help/information-about-federal-taxes-chinese-traditional │ zho,eng,ind       │
+│ https://www.irs.gov/help/information-about-federal-taxes-farsi               │ fas,eng,urd       │
+│ https://www.irs.gov/help/information-about-federal-taxes-farsi               │ fas,eng,urd       │
+│ https://www.irs.gov/help/information-about-federal-taxes-french              │ fra,eng,kor       │
+│ https://www.irs.gov/help/information-about-federal-taxes-french              │ fra,eng,kor       │
+└──────────────────────────────────────────────────────────────────────────────┴───────────────────┘
+```
+Jackpot!
+
+And how does that look in EOT-2024? Just swap the crawl filter:
+
+```bash
+python ./url-select.py "url, content_languages" "url_host_registered_domain = 'irs.gov' AND url_path NOT LIKE '/es%' AND content_languages NOT LIKE 'eng%' AND crawl = 'EOT-2024' LIMIT 10"
+```
+
+```
+SELECT url, content_languages FROM eot_url WHERE url_host_registered_domain = 'irs.gov' AND url_path NOT LIKE '/es%' AND content_languages NOT LIKE 'eng%' AND crawl = 'EOT-2024' LIMIT 10
 ┌──────────────────────────────────────────────────────────────────────────────────────┬───────────────────┐
 │                                         url                                          │ content_languages │
 │                                       varchar                                        │      varchar      │
@@ -514,5 +735,4 @@ SELECT url, content_languages FROM eot_url WHERE crawl = 'EOT-2024' AND url_host
 └──────────────────────────────────────────────────────────────────────────────────────┴───────────────────┘
 ```
 
-This streams the matching urls (non-`/es` paths whose primary language isn't
-English) directly from the EOT-2024 partition.
+Same LOTE help pages show up in both crawls -- only the crawl filter changed.
