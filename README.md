@@ -25,7 +25,7 @@ The dataset is available two ways:
 - over HTTP (default, no credentials):
   `https://data.commoncrawl.org/projects/eot-host-index-testing/`
 - on S3 (needs AWS credentials):
-  `s3://commoncrawl-dev/eot-archive/eot-host-index-testing/`
+  `s3://commoncrawl/projects/eot-host-index-testing/`
 
 ## Install the duckdb cli
 
@@ -50,7 +50,7 @@ To inspect both crawls at once (and see the `v`/`crawl` partition columns), poin
 duckdb at the hive layout on S3:
 
 ```bash
-duckdb -c "DESCRIBE FROM read_parquet('s3://commoncrawl-dev/eot-archive/eot-host-index-testing/v=*/crawl=*/host-index.parquet', hive_partitioning = true)"
+duckdb -c "DESCRIBE FROM read_parquet('s3://commoncrawl/projects/eot-host-index-testing/v=*/crawl=*/host-index.parquet', hive_partitioning = true)"
 ```
 
 <details><summary>click to see output</summary>

@@ -35,7 +35,7 @@ relative = 'v={v}/crawl={crawl}/host-index.parquet'
 source = os.environ.get('EOT_SOURCE', 'http').lower()
 
 if source == 's3':
-    base = 's3://commoncrawl-dev/eot-archive/eot-host-index-testing/'
+    base = 's3://commoncrawl/projects/eot-host-index-testing/'
     # S3 supports globbing, so hive columns are discovered automatically.
     files = [base + 'v=*/crawl=*/host-index.parquet']
 else:
